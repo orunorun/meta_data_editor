@@ -7,12 +7,12 @@
 Features
 --------
 * Upload one or many PDF files.
-* View / edit the common fields (Title, Author, …).
-* Edit Creation‑/Modification‑Date **with seconds**.
+* View / edit common metadata fields (Title, Author, …).
+* Edit Creation‑/Modification‑Date **with seconds** (HH:MM:SS).
 * “Apply same dates to all PDFs” **or** keep each file’s original dates.
 * Clear all metadata (including the auto‑added dates).
 * Download a single edited PDF or a ZIP of all results.
-* Fixed Helvetica‑→‑Arial font note (purely UI‑only).
+* Fixed Helvetica‑→‑Arial font note (UI‑only).
 
 Dependencies
 ------------
@@ -29,7 +29,7 @@ import pytz
 from pypdf import PdfReader, PdfWriter
 
 # ----------------------------------------------------------------------
-# ── Optional: detect the machine’s local time‑zone (fallback: UTC)      ──
+# ── Detect the machine’s local timezone (fallback → UTC)               ──
 # ----------------------------------------------------------------------
 try:
     import tzlocal  # type: ignore
@@ -74,7 +74,7 @@ st.markdown(
 )
 
 # ----------------------------------------------------------------------
-# ── Default values that appear when a PDF has no /Creator /Producer    ──
+# ── Default Creator / Producer values                                 ──
 # ----------------------------------------------------------------------
 DEFAULT_CREATOR = (
     "JasperReports Library version 6.20.5-3efcf2e67f959db3888d79f73dde2dbd7acb4f8e"
@@ -126,7 +126,7 @@ if "last_first_filename" not in st.session_state:
     st.session_state.last_first_filename = None
 
 if "run_action" not in st.session_state:
-    st.session_state.run_action = None          # "apply" | "clear" | None
+    st.session_state.run_action = None  # "apply" | "clear" | None
 
 if "processed_results" not in st.session_state:
     st.session_state.processed_results = None  # [(filename, bytes), ...]
@@ -135,7 +135,7 @@ if "processed_errors" not in st.session_state:
     st.session_state.processed_errors = []
 
 if "last_action" not in st.session_state:
-    st.session_state.last_action = None         # remember if we edited or cleared
+    st.session_state.last_action = None  # remember if we edited or cleared
 
 # ----------------------------------------------------------------------
 # ── Helper functions                                                 ──
@@ -151,11 +151,10 @@ def pdf_date_to_datetime(pdf_date_str: str):
     raw = pdf_date_str[2:]  # strip “D:”
 
     # ------------------------------------------------------------------
-    # 1️⃣  Isolate the basic date‑time component (up to 14 digits)
+    # 1️⃣ Isolate the basic date‑time component (up to 14 digits)
     # ------------------------------------------------------------------
     base_len = min(14, len(raw))
     base_part = raw[:base_len]
-    # Pad missing fields so that strptime always receives a 14‑char string
     padded = base_part.ljust(14, "0")
     try:
         dt_naive = datetime.strptime(padded, "%Y%m%d%H%M%S")
@@ -163,15 +162,14 @@ def pdf_date_to_datetime(pdf_date_str: str):
         return None
 
     # ------------------------------------------------------------------
-    # 2️⃣  Parse the optional timezone part (if any)
+    # 2️⃣ Parse the optional timezone part (if any)
     # ------------------------------------------------------------------
-    tz_part = raw[base_len:]               # e.g. "Z", "+02'00'", "-05'30'"
+    tz_part = raw[base_len:]  # e.g. "Z", "+02'00'", "-05'30'"
     if not tz_part or tz_part == "Z":
         tz = pytz.UTC
     else:
-        # Normalise "+02'00'" → "+0200"
         sign = tz_part[0]
-        # Remove any stray characters (', ", etc.) and keep only digits
+        # Normalise "+02'00'" → "+0200"
         hours = "".join(filter(str.isdigit, tz_part[1:3]))
         mins = "".join(filter(str.isdigit, tz_part[4:6])) if len(tz_part) >= 6 else "00"
         try:
@@ -194,7 +192,7 @@ def format_pdf_date(dt: datetime, tz: pytz.timezone = None) -> str:
     if dt is None:
         return ""
 
-    # If dt is naïve, attach the supplied timezone (or fall back to LOCAL_TZ)
+    # If dt is naïve, attach a timezone (local zone by default)
     if dt.tzinfo is None:
         tz = tz or LOCAL_TZ
         dt = tz.localize(dt)
@@ -276,17 +274,16 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True,
 )
 
-# When a *new* group of files is uploaded we initialise the UI fields
+# Initialise UI fields when a *new* batch is uploaded
 if uploaded_files:
-    # Reset previous processing results as soon as a new upload arrives
+    # Reset previously processed results as soon as a new upload arrives
     if st.session_state.last_first_filename != uploaded_files[0].name:
         first_file = uploaded_files[0]
         extracted = extract_metadata_dict(first_file.getvalue(), first_file.name)
         _populate_session_from_extracted(extracted)
 
-        # Remember the first filename so we don’t re‑initialise on every rerun
+        # Remember first filename to avoid re‑initialising on every rerun
         st.session_state.last_first_filename = first_file.name
-
 else:
     st.info("Please upload one or more PDF files.")
     st.stop()
@@ -294,7 +291,9 @@ else:
 # ----------------------------------------------------------------------
 # ── Font‑mapping reference (expander)                                 ──
 # ----------------------------------------------------------------------
-with st.expander("📋 Font Mapping Reference (Helvetica → ArialMT)", expanded=False):
+with st.expander(
+    "📋 Font Mapping Reference (Helvetica → ArialMT)", expanded=False
+):
     st.markdown("**Font Substitution Mapping:**")
     col_f1, col_f2, col_f3 = st.columns(3)
 
@@ -340,8 +339,9 @@ st.subheader("Edit Metadata")
 st.markdown(
     """
     <div class="font-info">
-    <strong>Font Configuration:</strong> UI text uses Helvetica family names, but the PDF
-    will embed ArialMT equivalents (Helvetica → ArialMT, Helvetica‑Bold → Arial‑BoldMT, …)
+    <strong>Font Configuration:</strong> UI uses Helvetica family names,
+    but the PDF will embed ArialMT equivalents (Helvetica → ArialMT,
+    Helvetica‑Bold → Arial‑BoldMT, …)
     </div>
     """,
     unsafe_allow_html=True,
@@ -387,14 +387,14 @@ with col2:
     )
 
 # --------------------------------------------------------------
-# Date / time inputs (seconds included)
+# Date / time inputs (seconds precision)
 # --------------------------------------------------------------
 st.markdown("### Dates (seconds precision)")
 
 date_col1, date_col2 = st.columns(2)
 
 with date_col1:
-    # ---- Creation ----
+    # ---- Creation -------------------------------------------------
     default_c_date = (
         st.session_state.metadata_values["creation_date"]
         or datetime.now().date()
@@ -405,12 +405,12 @@ with date_col1:
     c_time = st.time_input(
         "Creation Time (HH:MM:SS)",
         value=default_c_time,
-        step=1,  # seconds enabled
-        key="c_time",
+        key="c_time",   # **NO step argument – the widget already accepts seconds**
+        # format="HH:mm:ss"   # optional, adds a visual HH:MM:SS mask
     )
 
 with date_col2:
-    # ---- Modification ----
+    # ---- Modification --------------------------------------------
     default_m_date = (
         st.session_state.metadata_values["mod_date"]
         or datetime.now().date()
@@ -421,8 +421,8 @@ with date_col2:
     m_time = st.time_input(
         "Modification Time (HH:MM:SS)",
         value=default_m_time,
-        step=1,
         key="m_time",
+        # format="HH:mm:ss"
     )
 
 # --------------------------------------------------------------
@@ -452,7 +452,7 @@ if st.session_state.run_action in ("apply", "clear"):
     action = st.session_state.run_action
     st.session_state.run_action = None  # reset immediately
 
-    # Containers for the outcome
+    # Containers for results and errors
     processed = []
     errors = []
 
@@ -469,19 +469,18 @@ if st.session_state.run_action in ("apply", "clear"):
             writer.append_pages_from_reader(reader)
 
             if action == "clear":
-                # Remove every entry that might be present
+                # Remove *all* Info‑dictionary entries, then delete the auto‑added dates
                 writer.add_metadata({})
-                # pypdf may still inject /CreationDate and /ModDate → delete them manually
                 if hasattr(writer, "_info"):
                     writer._info.pop("/CreationDate", None)
                     writer._info.pop("/ModDate", None)
             else:
-                # ------------------------------------------------------
+                # --------------------------------------------------
                 # Build a metadata dictionary for THIS file
-                # ------------------------------------------------------
+                # --------------------------------------------------
                 meta_dict = {}
 
-                # ----- simple text entries --------------------------------
+                # ----- simple text entries -------------------------
                 if title.strip():
                     meta_dict["/Title"] = title.strip()
                 if author.strip():
@@ -495,9 +494,9 @@ if st.session_state.run_action in ("apply", "clear"):
                 if producer.strip():
                     meta_dict["/Producer"] = producer.strip()
 
-                # ----- dates ------------------------------------------------
+                # ----- dates ---------------------------------------
                 if apply_same_dates:
-                    # Use the date/time the user edited in the UI for every file
+                    # Use the dates the user edited in the UI for *every* file
                     if c_date:
                         cdt = datetime.combine(c_date, c_time)
                         meta_dict["/CreationDate"] = format_pdf_date(cdt, tz=LOCAL_TZ)
@@ -509,17 +508,20 @@ if st.session_state.run_action in ("apply", "clear"):
                     src_meta = extract_metadata_dict(src_bytes, file.name)
                     if src_meta.get("creation_dt"):
                         meta_dict["/CreationDate"] = format_pdf_date(
-                            src_meta["creation_dt"], tz=src_meta["creation_dt"].tzinfo
+                            src_meta["creation_dt"],
+                            tz=src_meta["creation_dt"].tzinfo,
                         )
                     if src_meta.get("mod_dt"):
                         meta_dict["/ModDate"] = format_pdf_date(
-                            src_meta["mod_dt"], tz=src_meta["mod_dt"].tzinfo
+                            src_meta["mod_dt"],
+                            tz=src_meta["mod_dt"].tzinfo,
                         )
 
-                # Finally attach the dict to the writer
                 writer.add_metadata(meta_dict)
 
-            # Write to an in‑memory buffer
+            # --------------------------------------------------
+            # Write the modified PDF to a BytesIO buffer
+            # --------------------------------------------------
             out_buf = io.BytesIO()
             writer.write(out_buf)
             out_buf.seek(0)
@@ -536,7 +538,7 @@ if st.session_state.run_action in ("apply", "clear"):
     progress_bar.empty()
     status_text.empty()
 
-    # Store results in session state for the download section
+    # Store outcomes in session state
     st.session_state.processed_results = processed
     st.session_state.processed_errors = errors
     st.session_state.last_action = action
@@ -568,7 +570,9 @@ if st.session_state.processed_results:
     else:
         # Bundle everything into a ZIP archive in memory
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        with zipfile.ZipFile(
+            zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED
+        ) as zip_file:
             for fname, data in results:
                 zip_file.writestr(fname, data)
         zip_buffer.seek(0)
