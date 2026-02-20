@@ -1,27 +1,60 @@
-import streamlit as st
-from pypdf import PdfReader, PdfWriter
-from pathlib import Path
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+📄 PDF Metadata Editor (Streamlit + pypdf)
+
+Features
+--------
+* Upload one or many PDF files.
+* View / edit the common fields (Title, Author, …).
+* Edit Creation‑/Modification‑Date **with seconds**.
+* “Apply same dates to all PDFs” **or** keep each file’s original dates.
+* Clear all metadata (including the auto‑added dates).
+* Download a single edited PDF or a ZIP of all results.
+* Fixed Helvetica‑→‑Arial font note (purely UI‑only).
+
+Dependencies
+------------
+pip install streamlit pypdf pytz tzlocal
+"""
+
 import io
 import zipfile
+from pathlib import Path
 from datetime import datetime, time
+
+import streamlit as st
 import pytz
+from pypdf import PdfReader, PdfWriter
 
-# ────────────────────────────────────────────────
-# PAGE CONFIG & FIXED FONT STYLING (Helvetica/Arial)
-# ────────────────────────────────────────────────
+# ----------------------------------------------------------------------
+# ── Optional: detect the machine’s local time‑zone (fallback: UTC)      ──
+# ----------------------------------------------------------------------
+try:
+    import tzlocal  # type: ignore
+    LOCAL_TZ = tzlocal.get_localzone()
+except Exception:  # pragma: no cover
+    LOCAL_TZ = pytz.UTC
+
+# ----------------------------------------------------------------------
+# ── Page configuration & global CSS (Helvetica / Arial)               ──
+# ----------------------------------------------------------------------
 st.set_page_config(page_title="PDF Metadata Editor", page_icon="🧹", layout="wide")
-
-# Injecting CSS to fix font to Helvetica/Arial globally
-st.markdown("""
+st.markdown(
+    """
     <style>
-    html, body, [class*="css"], .stText, .stMarkdown, p, h1, h2, h3, h4, span, label {
+    html, body, [class*="css"], .stText, .stMarkdown, p, h1, h2, h3, h4,
+    span, label {
         font-family: "Helvetica", "Arial", sans-serif !important;
     }
-    /* Specifically targeting input boxes and buttons */
-    .stButton>button, .stTextInput>div>div>input, .stDateInput>div>div>input, .stNumberInput>div>div>input {
+    .stButton>button,
+    .stTextInput>div>div>input,
+    .stDateInput>div>div>input,
+    .stTimeInput>div>div>input,
+    .stNumberInput>div>div>input {
         font-family: "Helvetica", "Arial", sans-serif !important;
     }
-    /* Info box styling for font mapping */
     .font-info {
         background-color: #f0f2f6;
         padding: 10px;
@@ -31,265 +64,379 @@ st.markdown("""
         font-size: 0.9em;
     }
     </style>
-    """, unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
-st.title("🧹 PDF Metadata Editor..(Kl_Rk)")
-st.markdown("Upload PDFs → edit or clear metadata → download modified files")
+st.title("🧹 PDF Metadata Editor (Kl_Rk)")
+st.markdown(
+    "Upload PDFs → edit (or clear) the metadata → download the modified files"
+)
 
-# Default Application (Creator) and Producer values
-DEFAULT_CREATOR = "JasperReports Library version 6.20.5-3efcf2e67f959db3888d79f73dde2dbd7acb4f8e"
+# ----------------------------------------------------------------------
+# ── Default values that appear when a PDF has no /Creator /Producer    ──
+# ----------------------------------------------------------------------
+DEFAULT_CREATOR = (
+    "JasperReports Library version 6.20.5-3efcf2e67f959db3888d79f73dde2dbd7acb4f8e"
+)
 DEFAULT_PRODUCER = "OpenPDF 1.3.30"
 
-# Font Mapping Reference
+# ----------------------------------------------------------------------
+# ── Font‑mapping reference (purely informational)                     ──
+# ----------------------------------------------------------------------
 FONT_MAPPING = {
     "Helvetica": {
         "type": "Type 1",
         "encoding": "Ansi",
         "actual_font": "ArialMT",
-        "actual_font_type": "TrueType"
+        "actual_font_type": "TrueType",
     },
     "Helvetica-Bold": {
-        "type": "Type 1", 
+        "type": "Type 1",
         "encoding": "Ansi",
         "actual_font": "Arial-BoldMT",
-        "actual_font_type": "TrueType"
+        "actual_font_type": "TrueType",
     },
     "Helvetica-BoldOblique": {
         "type": "Type 1",
-        "encoding": "Ansi", 
+        "encoding": "Ansi",
         "actual_font": "Arial-BoldItalicMT",
-        "actual_font_type": "TrueType"
-    }
+        "actual_font_type": "TrueType",
+    },
 }
 
-# ────────────────────────────────────────────────
-# Session state
-# ────────────────────────────────────────────────
+# ----------------------------------------------------------------------
+# ── Session‑state initialisation                                      ──
+# ----------------------------------------------------------------------
 if "metadata_values" not in st.session_state:
     st.session_state.metadata_values = {
-        "title": "", "author": "", "subject": "", "keywords": "",
-        "creator": DEFAULT_CREATOR,  # Application that created the PDF
-        "producer": DEFAULT_PRODUCER,  # PDF Producer
-        "creation_date": None, 
-        "creation_time": None,
-        "creation_seconds": 0,
-        "mod_date": None, 
-        "mod_time": None,
-        "mod_seconds": 0,
+        "title": "",
+        "author": "",
+        "subject": "",
+        "keywords": "",
+        "creator": DEFAULT_CREATOR,
+        "producer": DEFAULT_PRODUCER,
+        "creation_date": None,   # datetime.date or None
+        "creation_time": time(0, 0, 0),
+        "mod_date": None,
+        "mod_time": time(0, 0, 0),
     }
 
 if "last_first_filename" not in st.session_state:
     st.session_state.last_first_filename = None
 
 if "run_action" not in st.session_state:
-    st.session_state.run_action = None
+    st.session_state.run_action = None          # "apply" | "clear" | None
 
 if "processed_results" not in st.session_state:
-    st.session_state.processed_results = None
+    st.session_state.processed_results = None  # [(filename, bytes), ...]
 
 if "processed_errors" not in st.session_state:
     st.session_state.processed_errors = []
 
 if "last_action" not in st.session_state:
-    st.session_state.last_action = None
+    st.session_state.last_action = None         # remember if we edited or cleared
 
-# ────────────────────────────────────────────────
-# Helper functions
-# ────────────────────────────────────────────────
-def pdf_date_to_datetime(pdf_date_str):
-    if not pdf_date_str or not isinstance(pdf_date_str, str) or not pdf_date_str.startswith("D:"):
+# ----------------------------------------------------------------------
+# ── Helper functions                                                 ──
+# ----------------------------------------------------------------------
+def pdf_date_to_datetime(pdf_date_str: str):
+    """
+    Convert a PDF “D:” string to an *aware* ``datetime``.
+    Handles the full `+hh'mm' / -hh'mm' / Z` offset designators.
+    Returns ``None`` on malformed input.
+    """
+    if not isinstance(pdf_date_str, str) or not pdf_date_str.startswith("D:"):
         return None
+    raw = pdf_date_str[2:]  # strip “D:”
+
+    # ------------------------------------------------------------------
+    # 1️⃣  Isolate the basic date‑time component (up to 14 digits)
+    # ------------------------------------------------------------------
+    base_len = min(14, len(raw))
+    base_part = raw[:base_len]
+    # Pad missing fields so that strptime always receives a 14‑char string
+    padded = base_part.ljust(14, "0")
     try:
-        clean = pdf_date_str[2:].replace("'", "").replace("Z", "").split("+")[0].split("-")[0]
-        if len(clean) >= 14:
-            dt = datetime.strptime(clean[:14], "%Y%m%d%H%M%S")
-            return dt.replace(tzinfo=pytz.UTC)
-        elif len(clean) >= 8:
-            dt = datetime.strptime(clean[:8], "%Y%m%d")
-            return dt.replace(tzinfo=pytz.UTC)
-    except:
+        dt_naive = datetime.strptime(padded, "%Y%m%d%H%M%S")
+    except ValueError:
         return None
 
-def format_pdf_date(dt):
+    # ------------------------------------------------------------------
+    # 2️⃣  Parse the optional timezone part (if any)
+    # ------------------------------------------------------------------
+    tz_part = raw[base_len:]               # e.g. "Z", "+02'00'", "-05'30'"
+    if not tz_part or tz_part == "Z":
+        tz = pytz.UTC
+    else:
+        # Normalise "+02'00'" → "+0200"
+        sign = tz_part[0]
+        # Remove any stray characters (', ", etc.) and keep only digits
+        hours = "".join(filter(str.isdigit, tz_part[1:3]))
+        mins = "".join(filter(str.isdigit, tz_part[4:6])) if len(tz_part) >= 6 else "00"
+        try:
+            offset_minutes = int(hours) * 60 + int(mins)
+        except ValueError:
+            offset_minutes = 0
+        if sign == "-":
+            offset_minutes = -offset_minutes
+        tz = pytz.FixedOffset(offset_minutes)
+
+    return dt_naive.replace(tzinfo=tz)
+
+
+def format_pdf_date(dt: datetime, tz: pytz.timezone = None) -> str:
+    """
+    Turn a datetime (naïve or aware) into a PDF date string.
+    * If *tz* is supplied, the datetime is first localized to that zone.
+    * The produced string keeps the original offset (e.g. “+02'00'”) or “Z”.
+    """
     if dt is None:
         return ""
-    utc = dt.astimezone(pytz.UTC)
-    return f"D:{utc.strftime('%Y%m%d%H%M%S')}Z"
 
-def extract_metadata_dict(pdf_bytes, filename):
+    # If dt is naïve, attach the supplied timezone (or fall back to LOCAL_TZ)
+    if dt.tzinfo is None:
+        tz = tz or LOCAL_TZ
+        dt = tz.localize(dt)
+
+    offset = dt.utcoffset()
+    if offset is None or offset.total_seconds() == 0:
+        # UTC → short “Z” designator
+        return f"D:{dt.strftime('%Y%m%d%H%M%S')}Z"
+
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hrs, mins = divmod(total_minutes, 60)
+    return f"D:{dt.strftime('%Y%m%d%H%M%S')}{sign}{hrs:02d}'{mins:02d}'"
+
+
+def extract_metadata_dict(pdf_bytes: bytes, filename: str):
+    """
+    Return a dict with the most common Info‑dictionary entries.
+    The dates are returned as *aware* ``datetime`` objects (or ``None``).
+    """
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
         info = reader.metadata or {}
-        c_dt = pdf_date_to_datetime(info.get("/CreationDate", ""))
-        m_dt = pdf_date_to_datetime(info.get("/ModDate", ""))
-        
-        # Get values from PDF, if empty use defaults
-        pdf_creator = info.get("/Creator", "")
-        if not pdf_creator:
-            pdf_creator = DEFAULT_CREATOR
-            
-        pdf_producer = info.get("/Producer", "")
-        if not pdf_producer:
-            pdf_producer = DEFAULT_PRODUCER
-            
+
+        creation_dt = pdf_date_to_datetime(info.get("/CreationDate", ""))
+        mod_dt = pdf_date_to_datetime(info.get("/ModDate", ""))
+
         return {
             "title": info.get("/Title", ""),
             "author": info.get("/Author", ""),
             "subject": info.get("/Subject", ""),
             "keywords": info.get("/Keywords", ""),
-            "creator": pdf_creator,
-            "producer": pdf_producer,
-            "creation_date": c_dt.date() if c_dt else None,
-            "creation_time": c_dt.time() if c_dt else None,
-            "creation_seconds": c_dt.second if c_dt else 0,
-            "mod_date": m_dt.date() if m_dt else None,
-            "mod_time": m_dt.time() if m_dt else None,
-            "mod_seconds": m_dt.second if m_dt else 0,
+            "creator": info.get("/Creator", DEFAULT_CREATOR) or DEFAULT_CREATOR,
+            "producer": info.get("/Producer", DEFAULT_PRODUCER) or DEFAULT_PRODUCER,
+            "creation_dt": creation_dt,   # aware datetime or None
+            "mod_dt": mod_dt,             # aware datetime or None
         }
-    except Exception as e:
-        st.warning(f"Could not read metadata from {filename}: {e}")
+    except Exception as exc:
+        st.warning(f"Could not read metadata from {filename}: {exc}")
         return {
-            "title": "", "author": "", "subject": "", "keywords": "",
+            "title": "",
+            "author": "",
+            "subject": "",
+            "keywords": "",
             "creator": DEFAULT_CREATOR,
             "producer": DEFAULT_PRODUCER,
-            "creation_date": None, "creation_time": None, "creation_seconds": 0,
-            "mod_date": None, "mod_time": None, "mod_seconds": 0,
+            "creation_dt": None,
+            "mod_dt": None,
         }
 
-# ────────────────────────────────────────────────
-# File uploader
-# ────────────────────────────────────────────────
+
+def _populate_session_from_extracted(extracted: dict):
+    """
+    Helper that writes the extracted values into ``st.session_state.metadata_values``.
+    """
+    meta = st.session_state.metadata_values
+    meta["title"] = extracted.get("title", "")
+    meta["author"] = extracted.get("author", "")
+    meta["subject"] = extracted.get("subject", "")
+    meta["keywords"] = extracted.get("keywords", "")
+    meta["creator"] = extracted.get("creator", DEFAULT_CREATOR)
+    meta["producer"] = extracted.get("producer", DEFAULT_PRODUCER)
+
+    c_dt = extracted.get("creation_dt")
+    m_dt = extracted.get("mod_dt")
+    meta["creation_date"] = c_dt.date() if c_dt else None
+    meta["creation_time"] = c_dt.time() if c_dt else time(0, 0, 0)
+    meta["mod_date"] = m_dt.date() if m_dt else None
+    meta["mod_time"] = m_dt.time() if m_dt else time(0, 0, 0)
+
+
+# ----------------------------------------------------------------------
+# ── File uploader                                                    ──
+# ----------------------------------------------------------------------
 uploaded_files = st.file_uploader(
     "Upload PDF file(s)",
     type=["pdf"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
 )
 
+# When a *new* group of files is uploaded we initialise the UI fields
 if uploaded_files:
-    first = uploaded_files[0]
-    if first.name != st.session_state.last_first_filename:
-        meta = extract_metadata_dict(first.getvalue(), first.name)
-        st.session_state.metadata_values.update(meta)
-        st.session_state.last_first_filename = first.name
+    # Reset previous processing results as soon as a new upload arrives
+    if st.session_state.last_first_filename != uploaded_files[0].name:
+        first_file = uploaded_files[0]
+        extracted = extract_metadata_dict(first_file.getvalue(), first_file.name)
+        _populate_session_from_extracted(extracted)
 
-if not uploaded_files:
+        # Remember the first filename so we don’t re‑initialise on every rerun
+        st.session_state.last_first_filename = first_file.name
+
+else:
     st.info("Please upload one or more PDF files.")
     st.stop()
 
-# ────────────────────────────────────────────────
-# Font Mapping Reference Display
-# ────────────────────────────────────────────────
+# ----------------------------------------------------------------------
+# ── Font‑mapping reference (expander)                                 ──
+# ----------------------------------------------------------------------
 with st.expander("📋 Font Mapping Reference (Helvetica → ArialMT)", expanded=False):
-    st.markdown("""
-    **Font Substitution Mapping:**
-    """)
-    
+    st.markdown("**Font Substitution Mapping:**")
     col_f1, col_f2, col_f3 = st.columns(3)
-    
-    with col_f1:
-        st.markdown("""
-        **Helvetica**
-        - Type: Type 1
-        - Encoding: Ansi
-        - Actual Font: ArialMT
-        - Actual Font Type: TrueType
-        """)
-    
-    with col_f2:
-        st.markdown("""
-        **Helvetica-Bold**
-        - Type: Type 1
-        - Encoding: Ansi
-        - Actual Font: Arial-BoldMT
-        - Actual Font Type: TrueType
-        """)
-    
-    with col_f3:
-        st.markdown("""
-        **Helvetica-BoldOblique**
-        - Type: Type 1
-        - Encoding: Ansi
-        - Actual Font: Arial-BoldItalicMT
-        - Actual Font Type: TrueType
-        """)
 
-# ────────────────────────────────────────────────
-# Editor UI
-# ────────────────────────────────────────────────
+    with col_f1:
+        st.markdown(
+            """
+            **Helvetica**  
+            - Type: Type 1  
+            - Encoding: Ansi  
+            - Actual Font: ArialMT  
+            - Actual Font Type: TrueType
+            """
+        )
+    with col_f2:
+        st.markdown(
+            """
+            **Helvetica‑Bold**  
+            - Type: Type 1  
+            - Encoding: Ansi  
+            - Actual Font: Arial‑BoldMT  
+            - Actual Font Type: TrueType
+            """
+        )
+    with col_f3:
+        st.markdown(
+            """
+            **Helvetica‑BoldOblique**  
+            - Type: Type 1  
+            - Encoding: Ansi  
+            - Actual Font: Arial‑BoldItalicMT  
+            - Actual Font Type: TrueType
+            """
+        )
+
+# ----------------------------------------------------------------------
+# ── Edit‑metadata UI                                                ──
+# ----------------------------------------------------------------------
 st.subheader("Edit Metadata")
 
-# Display font mapping info above fields
-st.markdown("""
-<div class="font-info">
-<strong>Font Configuration:</strong> Fields use Helvetica family names with ArialMT TrueType substitution<br>
-<small>Helvetica → ArialMT | Helvetica-Bold → Arial-BoldMT | Helvetica-BoldOblique → Arial-BoldItalicMT</small>
-</div>
-""", unsafe_allow_html=True)
+# --------------------------------------------------------------
+# Font‑info banner (purely cosmetic)
+# --------------------------------------------------------------
+st.markdown(
+    """
+    <div class="font-info">
+    <strong>Font Configuration:</strong> UI text uses Helvetica family names, but the PDF
+    will embed ArialMT equivalents (Helvetica → ArialMT, Helvetica‑Bold → Arial‑BoldMT, …)
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
+# --------------------------------------------------------------
+# Left column – text fields
+# --------------------------------------------------------------
 col1, col2 = st.columns(2)
+
 with col1:
     title = st.text_input(
-        "Title (Helvetica → ArialMT)", 
+        "Title (Helvetica → ArialMT)",
         st.session_state.metadata_values["title"],
-        help="Base font: Helvetica (Type 1) → Actual: ArialMT (TrueType)"
+        help="Base font: Helvetica (Type 1) → Actual: ArialMT (TrueType)",
     )
     author = st.text_input(
-        "Author (Helvetica-Bold → Arial-BoldMT)",   
+        "Author (Helvetica‑Bold → Arial‑BoldMT)",
         st.session_state.metadata_values["author"],
-        help="Base font: Helvetica-Bold (Type 1) → Actual: Arial-BoldMT (TrueType)"
+        help="Base font: Helvetica‑Bold (Type 1) → Actual: Arial‑BoldMT (TrueType)",
     )
     subject = st.text_input(
-        "Subject",  
+        "Subject",
         st.session_state.metadata_values["subject"],
-        help="Standard text field"
+        help="Standard text field",
     )
     keywords = st.text_input(
-        "Keywords", 
+        "Keywords",
         st.session_state.metadata_values["keywords"],
-        help="Comma-separated keywords"
+        help="Comma‑separated list",
     )
 
 with col2:
     creator = st.text_input(
-        "Creator (Application)",  
+        "Creator (Application)",
         st.session_state.metadata_values["creator"],
-        help="Application that created the PDF"
+        help="Application that originally created the PDF",
     )
     producer = st.text_input(
-        "Producer", 
+        "Producer",
         st.session_state.metadata_values["producer"],
-        help="PDF producer library/engine"
+        help="PDF producing library / engine",
     )
 
-st.markdown("### Dates (with Seconds)")
-cold1, cold2 = st.columns(2)
+# --------------------------------------------------------------
+# Date / time inputs (seconds included)
+# --------------------------------------------------------------
+st.markdown("### Dates (seconds precision)")
 
-with cold1:
-    c_date = st.date_input("Creation Date", st.session_state.metadata_values["creation_date"])
-    c_time_cols = st.columns([3, 1])
-    with c_time_cols[0]:
-        c_time_val = st.session_state.metadata_values["creation_time"]
-        if c_time_val is None:
-            c_time_val = time(0, 0, 0)
-        c_time = st.time_input("Creation Time (HH:MM)", c_time_val)
-    with c_time_cols[1]:
-        c_seconds = st.number_input("Sec", min_value=0, max_value=59, 
-                                    value=st.session_state.metadata_values["creation_seconds"],
-                                    key="c_sec")
+date_col1, date_col2 = st.columns(2)
 
-with cold2:
-    m_date = st.date_input("Modification Date", st.session_state.metadata_values["mod_date"])
-    m_time_cols = st.columns([3, 1])
-    with m_time_cols[0]:
-        m_time_val = st.session_state.metadata_values["mod_time"]
-        if m_time_val is None:
-            m_time_val = time(0, 0, 0)
-        m_time = st.time_input("Modification Time (HH:MM)", m_time_val)
-    with m_time_cols[1]:
-        m_seconds = st.number_input("Sec", min_value=0, max_value=59, 
-                                    value=st.session_state.metadata_values["mod_seconds"],
-                                    key="m_sec")
+with date_col1:
+    # ---- Creation ----
+    default_c_date = (
+        st.session_state.metadata_values["creation_date"]
+        or datetime.now().date()
+    )
+    c_date = st.date_input("Creation Date", default_c_date, key="c_date")
 
+    default_c_time = st.session_state.metadata_values["creation_time"]
+    c_time = st.time_input(
+        "Creation Time (HH:MM:SS)",
+        value=default_c_time,
+        step=1,  # seconds enabled
+        key="c_time",
+    )
+
+with date_col2:
+    # ---- Modification ----
+    default_m_date = (
+        st.session_state.metadata_values["mod_date"]
+        or datetime.now().date()
+    )
+    m_date = st.date_input("Modification Date", default_m_date, key="m_date")
+
+    default_m_time = st.session_state.metadata_values["mod_time"]
+    m_time = st.time_input(
+        "Modification Time (HH:MM:SS)",
+        value=default_m_time,
+        step=1,
+        key="m_time",
+    )
+
+# --------------------------------------------------------------
+# “Apply same dates to all files” toggle
+# --------------------------------------------------------------
+apply_same_dates = st.checkbox(
+    "Use the dates shown above for **all** uploaded PDFs",
+    value=True,
+    key="apply_same_dates",
+)
+
+# --------------------------------------------------------------
+# Action buttons
+# --------------------------------------------------------------
 colb1, colb2 = st.columns(2)
 with colb1:
     if st.button("💾 Apply Changes", type="primary", use_container_width=True):
@@ -298,117 +445,158 @@ with colb2:
     if st.button("🗑️ Clear All Metadata", use_container_width=True):
         st.session_state.run_action = "clear"
 
-# ────────────────────────────────────────────────
-# Processing
-# ────────────────────────────────────────────────
+# ----------------------------------------------------------------------
+# ── Processing (apply / clear)                                         ──
+# ----------------------------------------------------------------------
 if st.session_state.run_action in ("apply", "clear"):
     action = st.session_state.run_action
-    st.session_state.run_action = None
+    st.session_state.run_action = None  # reset immediately
 
-    results = []
+    # Containers for the outcome
+    processed = []
     errors = []
 
-    progress = st.progress(0)
-    status = st.empty()
-    total = len(uploaded_files)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    total_files = len(uploaded_files)
 
-    for i, file in enumerate(uploaded_files, 1):
-        status.text(f"Processing {i}/{total}: {file.name}")
+    for idx, file in enumerate(uploaded_files, start=1):
+        status_text.text(f"Processing {idx}/{total_files}: **{file.name}**")
         try:
-            reader = PdfReader(io.BytesIO(file.getvalue()))
+            src_bytes = file.getvalue()
+            reader = PdfReader(io.BytesIO(src_bytes))
             writer = PdfWriter()
-            
             writer.append_pages_from_reader(reader)
 
             if action == "clear":
+                # Remove every entry that might be present
                 writer.add_metadata({})
+                # pypdf may still inject /CreationDate and /ModDate → delete them manually
+                if hasattr(writer, "_info"):
+                    writer._info.pop("/CreationDate", None)
+                    writer._info.pop("/ModDate", None)
             else:
-                meta = {}
-                if title.strip():    meta["/Title"]    = title.strip()
-                if author.strip():   meta["/Author"]   = author.strip()
-                if subject.strip():  meta["/Subject"]  = subject.strip()
-                if keywords.strip(): meta["/Keywords"] = keywords.strip()
-                if creator.strip():  meta["/Creator"]  = creator.strip()
-                if producer.strip(): meta["/Producer"] = producer.strip()
+                # ------------------------------------------------------
+                # Build a metadata dictionary for THIS file
+                # ------------------------------------------------------
+                meta_dict = {}
 
-                # Combine date, time, and seconds for Creation Date
-                if c_date:
-                    ct = time(c_time.hour, c_time.minute, c_seconds)
-                    cdt = datetime.combine(c_date, ct)
-                    meta["/CreationDate"] = format_pdf_date(cdt)
+                # ----- simple text entries --------------------------------
+                if title.strip():
+                    meta_dict["/Title"] = title.strip()
+                if author.strip():
+                    meta_dict["/Author"] = author.strip()
+                if subject.strip():
+                    meta_dict["/Subject"] = subject.strip()
+                if keywords.strip():
+                    meta_dict["/Keywords"] = keywords.strip()
+                if creator.strip():
+                    meta_dict["/Creator"] = creator.strip()
+                if producer.strip():
+                    meta_dict["/Producer"] = producer.strip()
 
-                # Combine date, time, and seconds for Modification Date
-                if m_date:
-                    mt = time(m_time.hour, m_time.minute, m_seconds)
-                    mdt = datetime.combine(m_date, mt)
-                    meta["/ModDate"] = format_pdf_date(mdt)
+                # ----- dates ------------------------------------------------
+                if apply_same_dates:
+                    # Use the date/time the user edited in the UI for every file
+                    if c_date:
+                        cdt = datetime.combine(c_date, c_time)
+                        meta_dict["/CreationDate"] = format_pdf_date(cdt, tz=LOCAL_TZ)
+                    if m_date:
+                        mdt = datetime.combine(m_date, m_time)
+                        meta_dict["/ModDate"] = format_pdf_date(mdt, tz=LOCAL_TZ)
+                else:
+                    # Preserve each file’s original timestamps (if they exist)
+                    src_meta = extract_metadata_dict(src_bytes, file.name)
+                    if src_meta.get("creation_dt"):
+                        meta_dict["/CreationDate"] = format_pdf_date(
+                            src_meta["creation_dt"], tz=src_meta["creation_dt"].tzinfo
+                        )
+                    if src_meta.get("mod_dt"):
+                        meta_dict["/ModDate"] = format_pdf_date(
+                            src_meta["mod_dt"], tz=src_meta["mod_dt"].tzinfo
+                        )
 
-                writer.add_metadata(meta)
+                # Finally attach the dict to the writer
+                writer.add_metadata(meta_dict)
 
-            buf = io.BytesIO()
-            writer.write(buf)
-            buf.seek(0)
+            # Write to an in‑memory buffer
+            out_buf = io.BytesIO()
+            writer.write(out_buf)
+            out_buf.seek(0)
 
             prefix = "[CLEARED]" if action == "clear" else "[EDITED]"
             new_name = f"{prefix} {Path(file.name).stem}.pdf"
-            results.append((new_name, buf.getvalue()))
+            processed.append((new_name, out_buf.getvalue()))
+        except Exception as exc:
+            errors.append(f"{file.name}: {exc}")
 
-        except Exception as e:
-            errors.append(f"{file.name}: {str(e)}")
+        progress_bar.progress(idx / total_files)
 
-        progress.progress(i / total)
+    # Clean up UI helpers
+    progress_bar.empty()
+    status_text.empty()
 
-    progress.empty()
-    status.empty()
-
-    st.session_state.processed_results = results
+    # Store results in session state for the download section
+    st.session_state.processed_results = processed
     st.session_state.processed_errors = errors
     st.session_state.last_action = action
 
-    st.success(f"Processed {len(results)} file(s) successfully")
+    # ------------------------------------------------------------------
+    # Feedback to the user
+    # ------------------------------------------------------------------
+    st.success(f"✅ Processed {len(processed)} file(s) successfully.")
     if errors:
-        st.error("Some files failed:\n" + "\n".join(errors))
+        st.error("❌ Some files could not be processed:\n" + "\n".join(errors))
 
-# ────────────────────────────────────────────────
-# Persistent Download Section
-# ────────────────────────────────────────────────
-if st.session_state.processed_results and len(st.session_state.processed_results) > 0:
+# ----------------------------------------------------------------------
+# ── Download section (single file or ZIP)                           ──
+# ----------------------------------------------------------------------
+if st.session_state.processed_results:
     st.markdown("### Download Results")
-    
+
     results = st.session_state.processed_results
-    
+
     if len(results) == 1:
-        name, data = results[0]
+        fname, data = results[0]
         st.download_button(
-            label=f"⬇️ Download edited file: {name}",
+            label=f"⬇️ Download: {fname}",
             data=data,
-            file_name=name,
+            file_name=fname,
             mime="application/pdf",
-            use_container_width=True
+            use_container_width=True,
         )
     else:
+        # Bundle everything into a ZIP archive in memory
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for name, data in results:
-                zf.writestr(name, data)
+        with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            for fname, data in results:
+                zip_file.writestr(fname, data)
         zip_buffer.seek(0)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        label = "cleared" if st.session_state.last_action == "clear" else "edited"
-        zip_name = f"pdfs_{label}_{ts}.zip"
+        zip_name = f"pdfs_{'cleared' if st.session_state.last_action == 'clear' else 'edited'}_{ts}.zip"
 
         st.download_button(
             label=f"⬇️ Download ZIP ({len(results)} files)",
             data=zip_buffer,
             file_name=zip_name,
             mime="application/zip",
-            use_container_width=True
+            use_container_width=True,
         )
 
+    # ------------------------------------------------------------------
+    # Reset button – lets the user start a fresh round without re‑uploading
+    # ------------------------------------------------------------------
     if st.button("Clear previous results (start fresh)"):
         st.session_state.processed_results = None
         st.session_state.processed_errors = []
         st.session_state.last_action = None
         st.rerun()
 
-st.caption("Helvetica/Arial UI Fixed • Streamlit + pypdf • Seconds precision enabled • Font mapping: Helvetica → ArialMT")
+# ----------------------------------------------------------------------
+# ── Footer caption ----------------------------------------------------
+# ----------------------------------------------------------------------
+st.caption(
+    "Helvetica/Arial UI fixed • Streamlit + pypdf • Seconds precision • "
+    "Font mapping: Helvetica → ArialMT"
+)
